@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>
+AI Powered Vision Engine 
+</title>
+<link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}" />
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+<div class="sheet">
+
+  <div class="titleblock">
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div>
+        <h1>
+AI Powered Vision Engine 
+</h1>
+        <div class="sub">Visual quality control workspace</div>
+      </div>
+    </div>
+    <div class="meta">
+      <span>REV <b>03</b></span>
+      <span>REFERENCE IMAGE <b id="modeLabel">YES</b></span>
+      <!-- ///<span>VISION ENGINE <b>GEMINI</b></span> -->
+    </div>
+  </div>
+
+  <div class="workflow">
+    <div class="workflow-step active"><span class="step-number">1</span>Enter product</div>
+    <div class="workflow-step"><span class="step-number">2</span>Choose mode &amp; add images</div>
+    <div class="workflow-step"><span class="step-number">3</span>Review quality result</div>
+  </div>
+
+  <form id="inspect-form" class="grid" autocomplete="off" data-max-references="{{ max_reference_images }}">
+    <div class="panel">
+      <p class="panel-label">Inspection setup</p>
+
+      <div class="field">
+        <label class="field-label" for="product">Product</label>
+        <input type="text" id="product" name="product"
+          placeholder="e.g. washing machine" required />
+      </div>
+
+      <!--
+        Hidden optional "extra notes" field. The server (server.py ->
+        build_task_from_product) and the frontend (static/app.js) already
+        read this field and append it to the inspection prompt when it is
+        non-empty, so turning it on later only requires removing the
+        "hidden" class below — no other code changes needed.
+        See README.md -> "Enabling the optional extra notes field".
+      -->
+      <div class="field hidden" id="extra-notes-section">
+        <label class="field-label" for="extra_notes">Additional notes (optional)</label>
+        <textarea id="extra_notes" name="extra_notes" rows="2"
+          placeholder="Optional extra detail to append to the inspection prompt"></textarea>
+      </div>
+
+      <div class="field">
+        <label class="field-label">Add reference image?</label>
+        <div class="mode-toggle">
+          <label class="mode-option">
+            <input type="radio" name="mode" value="with_references" checked />
+            <span>Yes</span>
+          </label>
+          <label class="mode-option">
+            <input type="radio" name="mode" value="prompt_only" />
+            <span>No</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="field" id="references-section">
+        <label class="field-label">Reference images · approved parts (up to {{ max_reference_images }})</label>
+        <div class="dropzone" id="reference-zone">
+          + &nbsp; Add approved reference images
+          <input type="file" id="reference-input" accept="image/*" multiple />
+        </div>
+        <div class="thumbs" id="reference-thumbs"></div>
+      </div>
+
+      <div class="field">
+        <label class="field-label">Inspection image · part under review</label>
+        <div class="dropzone" id="test-zone">
+          + &nbsp; Add image for inspection
+          <input type="file" id="test-input" accept="image/*" />
+        </div>
+        <div class="thumbs" id="test-thumb"></div>
+      </div>
+
+      <button type="submit" class="run-btn" id="run-btn">Run Inspection</button>
+      <div class="status-line" id="status-line"></div>
+    </div>
+
+    <div class="panel">
+      <p class="panel-label">Result</p>
+      <div id="resultArea">
+        <div class="result-empty">
+          No inspection has been run yet.<br>
+          Enter a product name, choose a mode, add images, then run the inspection.
+        </div>
+      </div>
+    </div>
+  </form>
+
+  <!-- <div class="footnote">GEMINI API · YOUR API KEY STAYS ON THE SERVER</div> -->
+</div>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

@@ -41,6 +41,3 @@ example
 # generated native folders
 /ios
 /android
-
-# Expo local files
-.expo/

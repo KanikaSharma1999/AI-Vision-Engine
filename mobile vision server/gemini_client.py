@@ -102,6 +102,8 @@ def call_gemini(
         )
 
     return raw_text, inference_seconds
+
+
 # ---------------------------------------------------------------------------
 # Fallback wrapper: retry busy models, then move down the fallback chain
 # ---------------------------------------------------------------------------

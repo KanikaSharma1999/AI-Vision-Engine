@@ -24,7 +24,8 @@ Both modes resolve to the same strict output schema:
 
 Before judging, the model must first identify what the test image shows and
 check it against the product the user selected (see PRODUCT IDENTIFICATION).
-A mismatch is reported first, but the uploaded image is still inspected.
+A mismatch is reported first, but the uploaded image is still inspected with 
+a warning to change image or product name
 """
 
 import json

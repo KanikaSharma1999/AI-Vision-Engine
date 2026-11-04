@@ -14,7 +14,7 @@ critic pipeline here — both modes make exactly one call to Gemini:
     separate critic stage to catch false positives), this mode uses a
     deliberately stricter, more conservative system prompt that pushes the
     model to actively look for a non-defect explanation before committing
-    to "defective", and to return "uncertain" rather than guess when the
+    to "defective", and to return "defective" rather than guess when the
     evidence doesn't clearly support one verdict over the other.
 
 Both modes resolve to the same strict output schema:
@@ -37,14 +37,14 @@ from image_utils import load_and_encode_image, ImageLoadError
 
 MAX_REFERENCE_IMAGES = 5
 
-ALLOWED_VERDICTS = {"conforming", "defective", "uncertain"}
+ALLOWED_VERDICTS = {"conforming", "defective"}
 
 RESPONSE_SCHEMA_INSTRUCTIONS = """
 Respond with ONLY a single JSON object — no markdown code fences, no prose
 before or after it. It must have exactly these fields:
 
 {
-  "verdict": "conforming" | "defective" | "uncertain",
+  "verdict": "conforming" | "defective" ,
   "finding": "one or two sentence summary of the primary observation",
   "assessment": "a comprehensive description of the physical state and any anomalies observed",
   "location": "a positional description of where any finding is, e.g. an approximate quadrant, edge, or region of the image; use \\"N/A\\" if there is no localized finding",
@@ -56,8 +56,8 @@ before or after it. It must have exactly these fields:
   "mismatch_message": "empty string if product_match is true; otherwise the message described in PRODUCT IDENTIFICATION"
 }
 
-Use "uncertain" for defect_percentage and confidence_score in a way that reflects
-genuine ambiguity — a low confidence_score with an "uncertain" verdict is expected
+Use "defective" for defect_percentage and confidence_score in a way that reflects
+genuine ambiguity — a low confidence_score with an "defective" verdict is expected
 and correct when the evidence is genuinely inconclusive; do not inflate confidence
 just to force a "conforming" or "defective" verdict.
 """.strip()
@@ -124,7 +124,7 @@ reasonable QC inspector would flag — not normal photographic variation
 
 If the comparison is genuinely ambiguous — for example, a difference exists
 but you cannot tell whether it is a real defect or just a lighting/angle
-artifact relative to the references — use "uncertain" rather than guessing.
+artifact relative to the references — use "defective" rather than guessing.
 
 {_build_identification_block(product, with_references=True)}
 
@@ -155,9 +155,9 @@ cosmetic variation as if they were defects. Actively guard against this:
    non-defect explanations you considered.
 3. If, after considering alternatives, you genuinely cannot tell whether
    something is a real defect or an artifact of lighting/angle/compression,
-   return "uncertain" instead of forcing a "conforming" or "defective" call.
-   Do not default to "conforming" just to avoid ambiguity, and do not default
-   to "defective" just because something looks unusual — "uncertain" exists
+   return "defective" instead of forcing a "conforming" or "defective" call.
+   Do not default to "conforming" just to avoid ambiguity, and default
+   to "defective" just because something looks unusual — "defective" exists
    specifically for this situation.
 4. Be specific: cite the concrete visual detail(s) driving your verdict
    rather than a vague overall impression.
@@ -250,7 +250,7 @@ def parse_inspection_response(raw_text: str, product: str = "") -> dict:
 
     verdict = str(data.get("verdict", "")).strip().lower()
     if verdict not in ALLOWED_VERDICTS:
-        verdict = "uncertain"
+        verdict = "defective"
 
     result = {
         "verdict": verdict,

@@ -198,7 +198,7 @@
     switch (v) {
       case "conforming": return "PASS";
       case "defective": return "FAIL";
-      case "uncertain": return "UNCERTAIN";
+      //case "uncertain": return "UNCERTAIN";
       case "error": return "ERROR";
       default: return (v || "UNKNOWN").toUpperCase();
     }

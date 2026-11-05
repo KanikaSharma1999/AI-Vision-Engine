@@ -44,7 +44,7 @@ from inspector import inspect_with_references, inspect_prompt_only, MAX_REFERENC
 load_dotenv()
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 GEMINI_TIMEOUT = int(os.environ.get("GEMINI_TIMEOUT", "120"))
 PORT = int(os.environ.get("PORT", "5000"))
 
@@ -160,6 +160,7 @@ def api_inspect():
             api_key=GEMINI_API_KEY,
             model=GEMINI_MODEL,
             timeout=GEMINI_TIMEOUT,
+            product=product,
         )
     else:
         outcome = inspect_prompt_only(
@@ -168,6 +169,7 @@ def api_inspect():
             api_key=GEMINI_API_KEY,
             model=GEMINI_MODEL,
             timeout=GEMINI_TIMEOUT,
+            product=product,
         )
 
     result_entry = {
@@ -184,6 +186,9 @@ def api_inspect():
             "defect_percentage": None,
             "confidence_score": None,
             "reasoning": None,
+            "detected_product": None,
+            "product_match": None,
+            "mismatch_message": None,
             "error": outcome["error"],
         })
     else:
@@ -213,9 +218,8 @@ def api_inspect():
         "extra_notes": extra_notes or None,
         "task": task,
         "mode": mode,
-        # "model": GEMINI_MODEL,
-        #"model_requested": GEMINI_MODEL,
-        #"model_used": outcome.get("model_used"),
+        "model_requested": GEMINI_MODEL,
+        "model_used": outcome.get("model_used"),
         "reference_count": len(reference_files),
         "reference_filenames": [f.filename for f in reference_files],
         "inspection_count": 1,

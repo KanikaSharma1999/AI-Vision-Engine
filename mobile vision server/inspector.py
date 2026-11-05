@@ -14,12 +14,22 @@ critic pipeline here — both modes make exactly one call to Gemini:
     separate critic stage to catch false positives), this mode uses a
     deliberately stricter, more conservative system prompt that pushes the
     model to actively look for a non-defect explanation before committing
-    to "defective", and to return "uncertain" rather than guess when the
-    evidence doesn't clearly support one verdict over the other.
+    to "defective".
+
+There is NO "uncertain" verdict. The only verdicts are "conforming" and
+"defective". Fail-safe rule: if the evidence is inconclusive, or the
+confidence_score is very low (below LOW_CONFIDENCE_THRESHOLD), the result is
+"defective" and the reasoning says it was flagged because it could not be
+confirmed as conforming.
 
 Both modes resolve to the same strict output schema:
     verdict, finding, assessment, location, defect_percentage,
-    confidence_score, reasoning
+    confidence_score, reasoning, detected_product, product_match,
+    mismatch_message
+
+Before judging, the model must first identify what the test image shows and
+check it against the product the user selected (see PRODUCT IDENTIFICATION).
+A mismatch is reported first, but the uploaded image is still inspected.
 """
 
 import json
@@ -31,34 +41,78 @@ from image_utils import load_and_encode_image, ImageLoadError
 
 MAX_REFERENCE_IMAGES = 5
 
-ALLOWED_VERDICTS = {"CONFORMING", "DEFECTIVE", "UNCERTAIN"}
+ALLOWED_VERDICTS = {"conforming", "defective"}
+
+# Below this confidence_score the verdict is forced to "defective" (fail-safe:
+# an item that cannot be confidently confirmed as conforming is not passed).
+LOW_CONFIDENCE_THRESHOLD = 0.4
 
 RESPONSE_SCHEMA_INSTRUCTIONS = """
 Respond with ONLY a single JSON object — no markdown code fences, no prose
 before or after it. It must have exactly these fields:
 
 {
-  "verdict": "conforming" | "defective" | "uncertain",
+  "verdict": "conforming" | "defective",
   "finding": "one or two sentence summary of the primary observation",
   "assessment": "a comprehensive description of the physical state and any anomalies observed",
   "location": "a positional description of where any finding is, e.g. an approximate quadrant, edge, or region of the image; use \\"N/A\\" if there is no localized finding",
   "defect_percentage": a number from 0.0 to 100.0 estimating how much of the inspected surface/part is affected,
   "confidence_score": a number from 0.0 to 1.0 reflecting how confident you are in the verdict,
-  "reasoning": "a step-by-step explanation of how you reached this conclusion"
+  "reasoning": "a step-by-step explanation of how you reached this conclusion",
+  "detected_product": "what the TEST IMAGE actually shows, in a few words, e.g. \\"refrigerator\\"",
+  "product_match": true | false | "unsure",
+  "mismatch_message": "empty string if product_match is true; otherwise the message described in PRODUCT IDENTIFICATION"
 }
 
-Use "uncertain" for defect_percentage and confidence_score in a way that reflects
-genuine ambiguity — a low confidence_score with an "uncertain" verdict is expected
-and correct when the evidence is genuinely inconclusive; do not inflate confidence
-just to force a "conforming" or "defective" verdict.
+There is no "uncertain" verdict — choose only "conforming" or "defective". Be honest
+in confidence_score: if the evidence is genuinely inconclusive, report a low
+confidence_score (below 0.4) and use "defective", explaining in reasoning that
+the item could not be confirmed as conforming. Do not inflate confidence_score
+just to justify either verdict.
 """.strip()
+
+
+# On a clear product/image mismatch the verdict is about a different item than
+# the one selected, so confidence in it is capped (tune or set to 1.0 to disable).
+MISMATCH_CONFIDENCE_CAP = 0.6
 
 
 # ---------------------------------------------------------------------------
 # Prompt construction
 # ---------------------------------------------------------------------------
 
-def _build_reference_mode_system_prompt(task: str, reference_count: int) -> str:
+def _build_identification_block(product: str, with_references: bool) -> str:
+    product = (product or "").strip() or "the item named in the inspection task"
+    reference_check = (
+        "\n5. Also check that the reference images show the same kind of item as the\n"
+        "   TEST IMAGE. If they do not, set product_match to false and say so in\n"
+        "   mismatch_message."
+        if with_references
+        else ""
+    )
+    return f"""
+PRODUCT IDENTIFICATION — do this FIRST, before any defect judgment:
+The user says the item being inspected is: "{product}".
+1. Identify what the TEST IMAGE actually shows and put it in detected_product.
+2. Decide whether it is the same kind of item as "{product}":
+   - product_match = true if it is.
+   - product_match = false if it is clearly a different kind of item (for
+     example a refrigerator when the user said washing machine).
+   - product_match = "unsure" if the image is too unclear, cropped, or shows
+     only a small part, so you cannot tell.
+3. If product_match is false or "unsure", set mismatch_message to a short,
+   plain message that first states the problem and then asks the user to fix
+   it. Example for false: "The selected product is {product}, but the image
+   appears to show a refrigerator. Please upload an image of the correct
+   product or change the product selection." If product_match is true, set
+   mismatch_message to "".
+4. Even on a mismatch, still inspect the image that was actually uploaded and
+   report what is visible in it. In finding and assessment, refer to the item
+   you actually see (detected_product), not the selected product.{reference_check}
+""".strip()
+
+
+def _build_reference_mode_system_prompt(task: str, reference_count: int, product: str = "") -> str:
     return f"""
 You are an experienced visual quality-control inspector.
 
@@ -79,13 +133,17 @@ reasonable QC inspector would flag — not normal photographic variation
 
 If the comparison is genuinely ambiguous — for example, a difference exists
 but you cannot tell whether it is a real defect or just a lighting/angle
-artifact relative to the references — use "uncertain" rather than guessing.
+artifact relative to the references — return "defective" with a low
+confidence_score (below 0.4), and state in reasoning that the item could not be
+confirmed as conforming to the references. Never answer "uncertain".
+
+{_build_identification_block(product, with_references=True)}
 
 {RESPONSE_SCHEMA_INSTRUCTIONS}
 """.strip()
 
 
-def _build_prompt_only_system_prompt(task: str) -> str:
+def _build_prompt_only_system_prompt(task: str, product: str = "") -> str:
     return f"""
 You are an experienced visual quality-control inspector operating WITHOUT any
 reference photo of a known-good part. You only have the task description and
@@ -108,12 +166,15 @@ cosmetic variation as if they were defects. Actively guard against this:
    non-defect explanations you considered.
 3. If, after considering alternatives, you genuinely cannot tell whether
    something is a real defect or an artifact of lighting/angle/compression,
-   return "uncertain" instead of forcing a "conforming" or "defective" call.
-   Do not default to "conforming" just to avoid ambiguity, and do not default
-   to "defective" just because something looks unusual — "uncertain" exists
-   specifically for this situation.
+   return "defective" with a low confidence_score (below 0.4) and say in
+   reasoning that it could not be confirmed as conforming. Do not default to
+   "conforming" just to avoid ambiguity, and do not give a confident
+   "defective" just because something looks unusual — report the doubt through
+   a low confidence_score. Never answer "uncertain".
 4. Be specific: cite the concrete visual detail(s) driving your verdict
    rather than a vague overall impression.
+
+{_build_identification_block(product, with_references=False)}
 
 {RESPONSE_SCHEMA_INSTRUCTIONS}
 """.strip()
@@ -167,7 +228,19 @@ def _clamp(value, lo, hi, default):
     return max(lo, min(hi, value))
 
 
-def parse_inspection_response(raw_text: str) -> dict:
+def _normalize_product_match(value):
+    """Returns True, False, or the string "unsure"."""
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"true", "yes", "match", "matches", "same"}:
+        return True
+    if text in {"false", "no", "mismatch", "different"}:
+        return False
+    return "unsure"
+
+
+def parse_inspection_response(raw_text: str, product: str = "") -> dict:
     """
     Parses and validates a raw Gemini response into the strict output
     schema, filling in safe defaults for any missing/malformed field rather
@@ -187,9 +260,12 @@ def parse_inspection_response(raw_text: str) -> dict:
     if not isinstance(data, dict):
         raise ValueError(f"Model response was valid JSON but not an object: {candidate_text[:500]}")
 
-    verdict = str(data.get("verdict", "")).strip().lower()
-    if verdict not in ALLOWED_VERDICTS:
-        verdict = "uncertain"
+    raw_verdict = str(data.get("verdict", "")).strip().lower()
+    verdict = raw_verdict
+    invalid_verdict = verdict not in ALLOWED_VERDICTS
+    if invalid_verdict:
+        # Covers "uncertain"/"unknown"/empty/anything else: no uncertain verdict exists.
+        verdict = "defective"
 
     result = {
         "verdict": verdict,
@@ -200,6 +276,64 @@ def parse_inspection_response(raw_text: str) -> dict:
         "confidence_score": round(_clamp(data.get("confidence_score"), 0.0, 1.0, 0.5), 4),
         "reasoning": str(data.get("reasoning") or "No reasoning provided.").strip(),
     }
+
+    # --- fail-safe: no "uncertain" verdict ---------------------------------
+    # Very low confidence, or an unrecognised verdict, always resolves to
+    # "defective", and the reasoning is updated so it matches the verdict.
+    low_confidence = result["confidence_score"] < LOW_CONFIDENCE_THRESHOLD
+    if low_confidence or invalid_verdict:
+        original = "conforming" if raw_verdict == "conforming" else None
+        if invalid_verdict:
+            why = (
+                f'the model returned an unrecognised verdict ("{raw_verdict or "empty"}") '
+                f"with a confidence of {result['confidence_score']:.2f}"
+            )
+        else:
+            why = f"the confidence score ({result['confidence_score']:.2f}) is below {LOW_CONFIDENCE_THRESHOLD:.2f}"
+        if original:
+            note = (
+                f"Marked DEFECTIVE: the model initially leaned conforming, but {why}, "
+                f"so the item could not be confirmed as conforming. Flagged for manual review."
+            )
+        else:
+            note = (
+                f"Marked DEFECTIVE: {why}, so the item could not be confirmed as "
+                f"conforming. Flagged for manual review."
+            )
+        result["verdict"] = "defective"
+        result["reasoning"] = f"{note} Model reasoning: {result['reasoning']}"
+
+    # --- product identification / mismatch handling ------------------------
+    detected = str(data.get("detected_product") or "").strip() or "unknown"
+    match = _normalize_product_match(data.get("product_match"))
+    message = str(data.get("mismatch_message") or "").strip()
+    selected = (product or "").strip() or "the selected product"
+
+    if match is True:
+        message = ""
+    elif not message:
+        if match is False:
+            message = (
+                f'The selected product is "{selected}", but the image appears to '
+                f"show {detected}. Please upload an image of the correct product "
+                f"or change the product selection."
+            )
+        else:
+            message = (
+                f'Could not confirm the image shows "{selected}" '
+                f"(it looks like: {detected}). Please check the image and product selection."
+            )
+
+    result["detected_product"] = detected
+    result["product_match"] = match
+    result["mismatch_message"] = message
+
+    if match is False:
+        result["finding"] = f"PRODUCT MISMATCH: {message} {result['finding']}"
+        result["confidence_score"] = round(min(result["confidence_score"], MISMATCH_CONFIDENCE_CAP), 4)
+    elif match == "unsure":
+        result["finding"] = f"PRODUCT UNCLEAR: {message} {result['finding']}"
+
     return result
 
 
@@ -214,6 +348,7 @@ def inspect_with_references(
     api_key: str,
     model: str,
     timeout: int = 120,
+    product: str = "",
 ) -> dict:
     """
     Single-call reference-mode inspection.
@@ -254,7 +389,7 @@ def inspect_with_references(
     parts.append({"text": "This is the TEST IMAGE that needs to be judged against the reference image(s) above:"})
     parts.append({"inline_data": {"mime_type": test_mime, "data": test_b64}})
 
-    system_prompt = _build_reference_mode_system_prompt(task, len(reference_sources))
+    system_prompt = _build_reference_mode_system_prompt(task, len(reference_sources), product)
 
     total_start = time.perf_counter()
     try:
@@ -265,7 +400,7 @@ def inspect_with_references(
             model=model,
             timeout=timeout,
         )
-        result = parse_inspection_response(raw_text)
+        result = parse_inspection_response(raw_text, product)
     except (GeminiError, ValueError) as e:
         total_seconds = round(image_load_seconds + (time.perf_counter() - total_start), 4)
         return {
@@ -300,6 +435,7 @@ def inspect_prompt_only(
     api_key: str,
     model: str,
     timeout: int = 120,
+    product: str = "",
 ) -> dict:
     """
     Single-call prompt-only inspection (no reference images). Same return
@@ -320,7 +456,7 @@ def inspect_prompt_only(
         {"inline_data": {"mime_type": test_mime, "data": test_b64}},
     ]
 
-    system_prompt = _build_prompt_only_system_prompt(task)
+    system_prompt = _build_prompt_only_system_prompt(task, product)
 
     try:
         raw_text, inference_seconds, model_used = call_gemini_with_fallback(
@@ -330,7 +466,7 @@ def inspect_prompt_only(
             model=model,
             timeout=timeout,
         )
-        result = parse_inspection_response(raw_text)
+        result = parse_inspection_response(raw_text, product)
     except (GeminiError, ValueError) as e:
         return {
             "result": None,

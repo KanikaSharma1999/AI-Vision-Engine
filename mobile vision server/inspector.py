@@ -14,8 +14,13 @@ critic pipeline here — both modes make exactly one call to Gemini:
     separate critic stage to catch false positives), this mode uses a
     deliberately stricter, more conservative system prompt that pushes the
     model to actively look for a non-defect explanation before committing
-    to "defective", and to return "defective" rather than guess when the
-    evidence doesn't clearly support one verdict over the other.
+    to "defective".
+
+There is NO "uncertain" verdict. The only verdicts are "conforming" and
+"defective". Fail-safe rule: if the evidence is inconclusive, or the
+confidence_score is very low (below LOW_CONFIDENCE_THRESHOLD), the result is
+"defective" and the reasoning says it was flagged because it could not be
+confirmed as conforming.
 
 Both modes resolve to the same strict output schema:
     verdict, finding, assessment, location, defect_percentage,
@@ -24,8 +29,7 @@ Both modes resolve to the same strict output schema:
 
 Before judging, the model must first identify what the test image shows and
 check it against the product the user selected (see PRODUCT IDENTIFICATION).
-A mismatch is reported first, but the uploaded image is still inspected with 
-a warning to change image or product name
+A mismatch is reported first, but the uploaded image is still inspected.
 """
 
 import json
@@ -39,12 +43,16 @@ MAX_REFERENCE_IMAGES = 5
 
 ALLOWED_VERDICTS = {"conforming", "defective"}
 
+# Below this confidence_score the verdict is forced to "defective" (fail-safe:
+# an item that cannot be confidently confirmed as conforming is not passed).
+LOW_CONFIDENCE_THRESHOLD = 0.4
+
 RESPONSE_SCHEMA_INSTRUCTIONS = """
 Respond with ONLY a single JSON object — no markdown code fences, no prose
 before or after it. It must have exactly these fields:
 
 {
-  "verdict": "conforming" | "defective" ,
+  "verdict": "conforming" | "defective",
   "finding": "one or two sentence summary of the primary observation",
   "assessment": "a comprehensive description of the physical state and any anomalies observed",
   "location": "a positional description of where any finding is, e.g. an approximate quadrant, edge, or region of the image; use \\"N/A\\" if there is no localized finding",
@@ -56,10 +64,11 @@ before or after it. It must have exactly these fields:
   "mismatch_message": "empty string if product_match is true; otherwise the message described in PRODUCT IDENTIFICATION"
 }
 
-Use "defective" for defect_percentage and confidence_score in a way that reflects
-genuine ambiguity — a low confidence_score with an "defective" verdict is expected
-and correct when the evidence is genuinely inconclusive; do not inflate confidence
-just to force a "conforming" or "defective" verdict.
+There is no "uncertain" verdict — choose only "conforming" or "defective". Be honest
+in confidence_score: if the evidence is genuinely inconclusive, report a low
+confidence_score (below 0.4) and use "defective", explaining in reasoning that
+the item could not be confirmed as conforming. Do not inflate confidence_score
+just to justify either verdict.
 """.strip()
 
 
@@ -124,7 +133,9 @@ reasonable QC inspector would flag — not normal photographic variation
 
 If the comparison is genuinely ambiguous — for example, a difference exists
 but you cannot tell whether it is a real defect or just a lighting/angle
-artifact relative to the references — use "defective" rather than guessing.
+artifact relative to the references — return "defective" with a low
+confidence_score (below 0.4), and state in reasoning that the item could not be
+confirmed as conforming to the references. Never answer "uncertain".
 
 {_build_identification_block(product, with_references=True)}
 
@@ -155,10 +166,11 @@ cosmetic variation as if they were defects. Actively guard against this:
    non-defect explanations you considered.
 3. If, after considering alternatives, you genuinely cannot tell whether
    something is a real defect or an artifact of lighting/angle/compression,
-   return "defective" instead of forcing a "conforming" or "defective" call.
-   Do not default to "conforming" just to avoid ambiguity, and default
-   to "defective" just because something looks unusual — "defective" exists
-   specifically for this situation.
+   return "defective" with a low confidence_score (below 0.4) and say in
+   reasoning that it could not be confirmed as conforming. Do not default to
+   "conforming" just to avoid ambiguity, and do not give a confident
+   "defective" just because something looks unusual — report the doubt through
+   a low confidence_score. Never answer "uncertain".
 4. Be specific: cite the concrete visual detail(s) driving your verdict
    rather than a vague overall impression.
 
@@ -248,8 +260,11 @@ def parse_inspection_response(raw_text: str, product: str = "") -> dict:
     if not isinstance(data, dict):
         raise ValueError(f"Model response was valid JSON but not an object: {candidate_text[:500]}")
 
-    verdict = str(data.get("verdict", "")).strip().lower()
-    if verdict not in ALLOWED_VERDICTS:
+    raw_verdict = str(data.get("verdict", "")).strip().lower()
+    verdict = raw_verdict
+    invalid_verdict = verdict not in ALLOWED_VERDICTS
+    if invalid_verdict:
+        # Covers "uncertain"/"unknown"/empty/anything else: no uncertain verdict exists.
         verdict = "defective"
 
     result = {
@@ -261,6 +276,32 @@ def parse_inspection_response(raw_text: str, product: str = "") -> dict:
         "confidence_score": round(_clamp(data.get("confidence_score"), 0.0, 1.0, 0.5), 4),
         "reasoning": str(data.get("reasoning") or "No reasoning provided.").strip(),
     }
+
+    # --- fail-safe: no "uncertain" verdict ---------------------------------
+    # Very low confidence, or an unrecognised verdict, always resolves to
+    # "defective", and the reasoning is updated so it matches the verdict.
+    low_confidence = result["confidence_score"] < LOW_CONFIDENCE_THRESHOLD
+    if low_confidence or invalid_verdict:
+        original = "conforming" if raw_verdict == "conforming" else None
+        if invalid_verdict:
+            why = (
+                f'the model returned an unrecognised verdict ("{raw_verdict or "empty"}") '
+                f"with a confidence of {result['confidence_score']:.2f}"
+            )
+        else:
+            why = f"the confidence score ({result['confidence_score']:.2f}) is below {LOW_CONFIDENCE_THRESHOLD:.2f}"
+        if original:
+            note = (
+                f"Marked DEFECTIVE: the model initially leaned conforming, but {why}, "
+                f"so the item could not be confirmed as conforming. Flagged for manual review."
+            )
+        else:
+            note = (
+                f"Marked DEFECTIVE: {why}, so the item could not be confirmed as "
+                f"conforming. Flagged for manual review."
+            )
+        result["verdict"] = "defective"
+        result["reasoning"] = f"{note} Model reasoning: {result['reasoning']}"
 
     # --- product identification / mismatch handling ------------------------
     detected = str(data.get("detected_product") or "").strip() or "unknown"

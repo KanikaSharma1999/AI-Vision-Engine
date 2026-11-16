@@ -12,12 +12,20 @@ export type InspectionPayload = {
   testImage: InspectionImage;
 };
 
+export type BoundingBox = {
+  label: string;
+  /** [ymin, xmin, ymax, xmax], normalized 0-1000 relative to the image */
+  box_2d: [number, number, number, number];
+  kind: 'defect' | 'suspected';
+};
+
 export type InspectionResult = {
   error?: string | null;
   verdict?: string;
   finding?: string;
   assessment?: string;
   location?: string;
+  bounding_boxes?: BoundingBox[];
   reasoning?: string;
   confidence_score?: number;
   defect_percentage?: number;

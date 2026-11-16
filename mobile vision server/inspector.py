@@ -18,7 +18,7 @@ critic pipeline here — both modes make exactly one call to Gemini:
     evidence doesn't clearly support one verdict over the other.
 
 Both modes resolve to the same strict output schema:
-    verdict, finding, assessment, location, defect_percentage,
+    verdict, finding, assessment, location, bounding_boxes, defect_percentage,
     confidence_score, reasoning, detected_product, product_match,
     mismatch_message
 
@@ -50,10 +50,21 @@ before or after it. It must have exactly these fields:
   "defect_percentage": a number from 0.0 to 100.0 estimating how much of the inspected surface/part is affected,
   "confidence_score": a number from 0.0 to 1.0 reflecting how confident you are in the verdict,
   "reasoning": "a step-by-step explanation of how you reached this conclusion",
+  "bounding_boxes": [
+    {"label": "2-5 word name of the defect, e.g. \\"dent on door\\"", "box_2d": [ymin, xmin, ymax, xmax]}
+  ],
   "detected_product": "what the TEST IMAGE actually shows, in a few words, e.g. \\"refrigerator\\"",
   "product_match": true | false | "unsure",
   "mismatch_message": "empty string if product_match is true; otherwise the message described in PRODUCT IDENTIFICATION"
 }
+
+BOUNDING BOXES: for every distinct defect (or, for an "uncertain" verdict, every
+suspected area) add one entry to bounding_boxes, at most 5, most important first.
+box_2d is [ymin, xmin, ymax, xmax] as integers normalized to a 0-1000 scale
+relative to the TEST IMAGE ONLY (0,0 is the top-left corner; 1000,1000 is the
+bottom-right). Draw each box tightly around just the affected area, not the whole
+item. It must agree with the "location" text. Use an empty list [] when the verdict
+is "conforming" or there is no localized finding. Never box the reference images.
 
 Use "uncertain" for defect_percentage and confidence_score in a way that reflects
 genuine ambiguity — a low confidence_score with an "uncertain" verdict is expected
@@ -227,6 +238,51 @@ def _normalize_product_match(value):
     return "unsure"
 
 
+MAX_BOXES = 5
+MIN_BOX_SIDE = 5  # on the 0-1000 scale; drops degenerate slivers
+
+
+def _normalize_boxes(raw, verdict: str, product_match) -> list:
+    """
+    Validates model-supplied boxes into [{"label", "box_2d":[ymin,xmin,ymax,xmax],
+    "kind"}] on a 0-1000 scale. Bad entries are dropped, never raised on.
+    No boxes for conforming verdicts or a clear product mismatch.
+    """
+    if verdict == "conforming" or product_match is False:
+        return []
+    if isinstance(raw, dict):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return []
+
+    kind = "suspected" if verdict == "uncertain" else "defect"
+    boxes = []
+    for item in raw:
+        coords = item.get("box_2d") or item.get("box") if isinstance(item, dict) else item
+        label = str(item.get("label") or "").strip() if isinstance(item, dict) else ""
+        if not isinstance(coords, (list, tuple)) or len(coords) != 4:
+            continue
+        try:
+            ymin, xmin, ymax, xmax = (float(c) for c in coords)
+        except (TypeError, ValueError):
+            continue
+        # tolerate swapped corners
+        ymin, ymax = sorted((ymin, ymax))
+        xmin, xmax = sorted((xmin, xmax))
+        ymin, xmin = max(0.0, ymin), max(0.0, xmin)
+        ymax, xmax = min(1000.0, ymax), min(1000.0, xmax)
+        if (ymax - ymin) < MIN_BOX_SIDE or (xmax - xmin) < MIN_BOX_SIDE:
+            continue
+        boxes.append({
+            "label": label or ("suspected area" if kind == "suspected" else "defect"),
+            "box_2d": [round(ymin), round(xmin), round(ymax), round(xmax)],
+            "kind": kind,
+        })
+        if len(boxes) >= MAX_BOXES:
+            break
+    return boxes
+
+
 def parse_inspection_response(raw_text: str, product: str = "") -> dict:
     """
     Parses and validates a raw Gemini response into the strict output
@@ -282,6 +338,7 @@ def parse_inspection_response(raw_text: str, product: str = "") -> dict:
                 f"(it looks like: {detected}). Please check the image and product selection."
             )
 
+    result["bounding_boxes"] = _normalize_boxes(data.get("bounding_boxes"), verdict, match)
     result["detected_product"] = detected
     result["product_match"] = match
     result["mismatch_message"] = message

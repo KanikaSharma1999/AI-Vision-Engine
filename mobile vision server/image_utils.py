@@ -12,7 +12,7 @@ import io
 import os
 import time
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "bmp", "gif"}
 
@@ -88,6 +88,10 @@ def load_and_encode_image(source, max_long_edge: int = MAX_LONG_EDGE):
         raise ImageLoadError(f"Unrecognized or corrupt image format: {e}") from e
     except OSError as e:
         raise ImageLoadError(f"Truncated or unreadable image file: {e}") from e
+
+    # Bake in EXIF rotation so the model sees the same orientation the user
+    # sees; otherwise bounding boxes would be drawn rotated on phone photos.
+    img = ImageOps.exif_transpose(img)
 
     # Normalize mode: Gemini/JPEG doesn't like palette/alpha modes.
     if img.mode not in ("RGB", "L"):

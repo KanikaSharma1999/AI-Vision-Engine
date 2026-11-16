@@ -183,6 +183,7 @@ def api_inspect():
             "finding": None,
             "assessment": None,
             "location": None,
+            "bounding_boxes": [],
             "defect_percentage": None,
             "confidence_score": None,
             "reasoning": None,

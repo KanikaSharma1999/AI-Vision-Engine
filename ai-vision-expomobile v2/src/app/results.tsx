@@ -1,8 +1,9 @@
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Alert, Image, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import type { BoundingBox } from '../../lib/api';
 import { SaveCancelledError, saveResultJson, shareResultJson } from '../../lib/exportResult';
 import { getLastRun, requestFormReset } from '../../lib/runStore';
 
@@ -24,6 +25,51 @@ function prettyKey(key: string) {
 
 function formatSeconds(value: unknown) {
   return typeof value === 'number' ? `${value.toFixed(2)} s` : '—';
+}
+
+// Photo with box overlays. Boxes are 0-1000 normalized, so percent positioning
+// works once the container matches the image's real aspect ratio.
+function AnnotatedPhoto({ uri, boxes }: { uri: string; boxes: BoundingBox[] }) {
+  const [ratio, setRatio] = useState(4 / 3);
+  useEffect(() => {
+    Image.getSize(
+      uri,
+      (w, h) => w > 0 && h > 0 && setRatio(w / h),
+      () => {},
+    );
+  }, [uri]);
+
+  return (
+    <View style={[styles.photoWrap, { aspectRatio: ratio }]}>
+      <Image source={{ uri }} style={StyleSheet.absoluteFill} resizeMode="stretch" />
+      {boxes.map((b, i) => {
+        const [ymin, xmin, ymax, xmax] = b.box_2d;
+        const color = b.kind === 'suspected' ? '#f0a020' : '#e53935';
+        return (
+          <View
+            key={i}
+            pointerEvents="none"
+            style={{
+              position: 'absolute',
+              top: `${ymin / 10}%`,
+              left: `${xmin / 10}%`,
+              width: `${(xmax - xmin) / 10}%`,
+              height: `${(ymax - ymin) / 10}%`,
+              borderWidth: 3,
+              borderColor: color,
+              borderStyle: b.kind === 'suspected' ? 'dashed' : 'solid',
+            }}
+          >
+            <View style={[styles.boxTag, { backgroundColor: color }]}>
+              <Text style={styles.boxTagText} numberOfLines={1}>
+                {i + 1}. {b.label}
+              </Text>
+            </View>
+          </View>
+        );
+      })}
+    </View>
+  );
 }
 
 export default function ResultsScreen() {
@@ -121,7 +167,9 @@ export default function ResultsScreen() {
           </View>
         </View>
 
-        {imageUri ? <Image source={{ uri: imageUri }} style={styles.photo} resizeMode="cover" /> : null}
+        {imageUri ? (
+          <AnnotatedPhoto uri={imageUri} boxes={result.bounding_boxes ?? []} />
+        ) : null}
 
         <Field label="Finding" value={result.finding} />
         <Field label="Assessment" value={result.assessment} />
@@ -205,7 +253,9 @@ const styles = StyleSheet.create({
   statBox: { flex: 1, backgroundColor: '#fff', borderWidth: 1, borderColor: '#ccd9dd', borderRadius: 8, paddingVertical: 14, alignItems: 'center' },
   statValue: { fontSize: 22, fontWeight: '800', color: '#143149' },
   statLabel: { fontSize: 11, fontWeight: '700', color: '#52636d', textTransform: 'uppercase', marginTop: 2 },
-  photo: { width: '100%', height: 200, borderRadius: 8, marginTop: 16, backgroundColor: '#edf4f4' },
+  photoWrap: { width: '100%', borderRadius: 8, marginTop: 16, backgroundColor: '#edf4f4', overflow: 'hidden' },
+  boxTag: { position: 'absolute', top: -3, left: -3, paddingHorizontal: 5, paddingVertical: 1, maxWidth: 220 },
+  boxTagText: { color: '#fff', fontSize: 10, fontWeight: '800' },
   field: { marginTop: 16 },
   fieldLabel: { fontSize: 12, fontWeight: '800', color: '#52636d', textTransform: 'uppercase', marginBottom: 4 },
   fieldValue: { fontSize: 14, color: '#32454f', lineHeight: 20 },

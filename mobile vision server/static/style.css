@@ -159,8 +159,13 @@ textarea:focus,input:focus{outline:3px solid #cde9e6;border-color:var(--teal)}
 .stat .stat-value{font:700 18px 'DM Mono',monospace;color:var(--navy)}
 .stat .stat-label{margin-top:3px;text-transform:uppercase;letter-spacing:.6px;font-size:10.5px;color:var(--muted)}
 
-.test-img-wrap{margin-top:4px;overflow:hidden;border:1px solid var(--line);border-radius:6px}
+.test-img-wrap{position:relative;margin-top:4px;overflow:hidden;border:1px solid var(--line);border-radius:6px}
 .test-img-wrap img{width:100%;display:block}
+.bbox{position:absolute;box-sizing:border-box;border:3px solid #e53935;pointer-events:none}
+.bbox.suspected{border-color:#f0a020;border-style:dashed}
+.bbox-label{position:absolute;left:-3px;top:-3px;background:#e53935;color:#fff;
+  font:700 10px 'DM Mono',monospace;padding:1px 5px;white-space:nowrap;max-width:240px;overflow:hidden;text-overflow:ellipsis}
+.bbox.suspected .bbox-label{background:#f0a020}
 
 details.data-block{margin-bottom:16px;border:1px solid var(--line);border-radius:7px;background:#fbfcfc}
 details.data-block summary{

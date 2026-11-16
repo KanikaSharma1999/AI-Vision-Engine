@@ -136,7 +136,7 @@ export default function MainScreen({ onSubmit, onOpenSettings, isSubmitting }) {
       testImage,
     });
   }
-
+    
   return (
     <ScrollView contentContainerStyle={styles.container}>
       <View style={styles.headerRow}>

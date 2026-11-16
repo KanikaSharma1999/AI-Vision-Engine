@@ -204,6 +204,19 @@
     }
   }
 
+  // Boxes arrive as [ymin, xmin, ymax, xmax] on a 0-1000 scale, so percent
+  // positioning lines up at any displayed image size.
+  function boxesHtml(boxes) {
+    if (!Array.isArray(boxes)) return "";
+    return boxes.map((b, i) => {
+      const [ymin, xmin, ymax, xmax] = b.box_2d;
+      const style = `top:${ymin / 10}%;left:${xmin / 10}%;` +
+        `width:${(xmax - xmin) / 10}%;height:${(ymax - ymin) / 10}%`;
+      const cls = b.kind === "suspected" ? "bbox suspected" : "bbox";
+      return `<div class="${cls}" style="${style}"><span class="bbox-label">${i + 1}. ${escapeHtml(b.label)}</span></div>`;
+    }).join("");
+  }
+
   function renderResult(run) {
     const result = run.results[0];
     const verdictClass = result.verdict || "error";
@@ -248,7 +261,7 @@
 
       <div class="result-block">
         <h4>Inspected part</h4>
-        <div class="test-img-wrap">${imgUrl ? `<img src="${imgUrl}" alt="Inspected part" />` : ""}</div>
+        <div class="test-img-wrap">${imgUrl ? `<img src="${imgUrl}" alt="Inspected part" />` : ""}${boxesHtml(result.bounding_boxes)}</div>
       </div>
 
       ${downloadButtonHtml()}`;
